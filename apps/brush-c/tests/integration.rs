@@ -5,7 +5,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use brush_c::{ProgressMessage, TrainExitCode, TrainOptions, train_and_save};
+use brush_c::{
+    ProgressMessage, TrainExitCode, TrainOptions, train_and_save,
+    brush_viewer_create, brush_viewer_destroy, brush_viewer_has_splats, brush_viewer_render_frame,
+};
 
 #[repr(C)]
 struct CallbackState {
@@ -64,6 +67,8 @@ fn test_train_and_save_ffi_short() {
         refine_every: 5,
         export_every: 10,
         max_resolution: 50,
+        max_splats: 0,
+        sh_degree: 0,
         output_path: output_path_cstr.as_ptr(),
     };
 
@@ -108,6 +113,8 @@ fn test_train_and_save_ffi_invalid_path() {
         refine_every: 5,
         export_every: 10,
         max_resolution: 50,
+        max_splats: 0,
+        sh_degree: 0,
         output_path: output_path_cstr.as_ptr(),
     };
 
@@ -153,6 +160,43 @@ fn test_train_and_save_ffi_null_options() {
 }
 
 #[test]
+fn test_viewer_loads_and_renders() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let ply_path = Path::new(manifest_dir)
+        .join("tests/data/test_dataset/init.ply");
+
+    let ply_cstr = CString::new(ply_path.to_str().unwrap()).unwrap();
+
+    let viewer = unsafe { brush_viewer_create(ply_cstr.as_ptr()) };
+    assert!(!viewer.is_null(), "brush_viewer_create returned null");
+
+    // Poll until splats are loaded (up to 10 s)
+    let mut has = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if unsafe { brush_viewer_has_splats(viewer) } {
+            has = true;
+            break;
+        }
+    }
+    assert!(has, "brush_viewer_has_splats never became true");
+
+    // Render a small frame
+    const W: u32 = 64;
+    const H: u32 = 64;
+    let mut buf = vec![0u8; (W * H * 4) as usize];
+    let ok = unsafe { brush_viewer_render_frame(viewer, W, H, buf.as_mut_ptr()) };
+    assert!(ok, "brush_viewer_render_frame returned false");
+
+    // Expect at least some non-zero pixels (background is gray 0.2)
+    let non_zero = buf.iter().any(|&b| b > 0);
+    assert!(non_zero, "rendered frame is all zeros");
+    println!("render ok — first 16 bytes: {:?}", &buf[..16]);
+
+    unsafe { brush_viewer_destroy(viewer); }
+}
+
+#[test]
 fn test_train_and_save_ffi_null_dataset() {
     let temp_dir = tempfile::Builder::new()
         .prefix("ffi_test_invalid_")
@@ -166,6 +210,8 @@ fn test_train_and_save_ffi_null_dataset() {
         refine_every: 5,
         export_every: 10,
         max_resolution: 50,
+        max_splats: 0,
+        sh_degree: 0,
         output_path: output_path_cstr.as_ptr(),
     };
 

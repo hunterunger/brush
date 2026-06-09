@@ -1,6 +1,9 @@
 // brush-c is a native-only FFI shim. The crate compiles to an empty stub on wasm.
 #![cfg(not(target_family = "wasm"))]
 
+mod viewer;
+pub use viewer::*;
+
 use brush_process::DataSource;
 use brush_process::burn_init_setup;
 use brush_process::config::TrainStreamConfig;
@@ -46,6 +49,11 @@ pub struct TrainOptions {
     pub refine_every: u32,
     pub max_resolution: u32,
     pub export_every: u32,
+    /// Cap on total splats (0 = use default). Lower → smaller output files.
+    pub max_splats: u32,
+    /// Spherical-harmonics degree 0–3 (0 = use default). Lower → much smaller
+    /// files (SH coefficients dominate per-splat size).
+    pub sh_degree: u32,
     pub output_path: *const c_char,
 }
 
@@ -69,6 +77,13 @@ impl TrainOptions {
         process_args.load_config.max_resolution = self.max_resolution;
         process_args.process_config.export_every = self.export_every;
         process_args.process_config.eval_save_to_disk = true;
+        // 0 means "leave the default". These shrink output files dramatically.
+        if self.max_splats > 0 {
+            process_args.train_config.max_splats = self.max_splats;
+        }
+        if self.sh_degree > 0 {
+            process_args.model_config.sh_degree = self.sh_degree;
+        }
         process_args
     }
 }
@@ -76,7 +91,20 @@ impl TrainOptions {
 pub type ProgressCallback =
     extern "C" fn(progress_message: ProgressMessage, user_data: *mut c_void);
 
+// Single process-wide guard for the wgpu/cubecl runtime. `burn_init_setup`
+// registers a cubecl server and panics if called twice, so BOTH the trainer
+// and the viewer must share this one cell — otherwise training then viewing
+// (same process) double-initializes and crashes.
 static SETUP: OnceCell<()> = OnceCell::const_new();
+
+/// Initialize the Burn/wgpu runtime exactly once per process.
+pub(crate) async fn ensure_burn_setup() {
+    SETUP
+        .get_or_init(async || {
+            burn_init_setup().await;
+        })
+        .await;
+}
 
 /// Trains a model from a dataset and saves the result.
 ///
@@ -136,11 +164,7 @@ pub unsafe extern "C" fn train_and_save(
             .build()
             .expect("Failed to create tokio runtime")
             .block_on(async {
-                SETUP
-                    .get_or_init(async move || {
-                        burn_init_setup().await;
-                    })
-                    .await;
+                ensure_burn_setup().await;
 
                 while let Some(message_result) = process.stream.next().await {
                     match message_result {
