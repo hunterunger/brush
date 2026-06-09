@@ -55,6 +55,11 @@ void brush_viewer_reset_view(BrushViewer *viewer);
 /// per axis (screen_x, screen_y, depth). For drawing an orientation gizmo.
 void brush_viewer_get_axes(const BrushViewer *viewer, float *out_xyz);
 
+/// Project count world points to screen pixels. out receives 3 floats/point
+/// (screen_x, screen_y, depth); behind-camera points get NaN x/y, depth<=0.
+void brush_viewer_project_points(const BrushViewer *viewer, const float *in_xyz,
+                                 uint32_t count, float *out);
+
 /// Set background color (each component 0.0–1.0).
 void brush_viewer_set_background(BrushViewer *viewer, float r, float g, float b);
 

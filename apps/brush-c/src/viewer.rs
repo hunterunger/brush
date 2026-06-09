@@ -438,6 +438,53 @@ pub unsafe extern "C" fn brush_viewer_get_axes(viewer: *const BrushViewer, out_x
     }
 }
 
+/// Project `count` world points to screen pixels. `out` receives 3 floats per
+/// point: (screen_x, screen_y, depth). Points behind the camera get NaN x/y and
+/// a non-positive depth. Pixels are in the same units as `set_size` (view points).
+///
+/// # Safety
+/// `viewer` valid; `in_xyz` has `count*3` floats; `out` has `count*3` writable floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn brush_viewer_project_points(
+    viewer: *const BrushViewer,
+    in_xyz: *const f32,
+    count: u32,
+    out: *mut f32,
+) {
+    if viewer.is_null() || in_xyz.is_null() || out.is_null() {
+        return;
+    }
+    let v = unsafe { &*viewer };
+    let cam = v.orbit.to_camera(v.width, v.height);
+    let w = v.width.max(1) as f32;
+    let h = v.height.max(1) as f32;
+    let thfy = (v.orbit.fov_y * 0.5).tan();
+    let thfx = (w / h) * thfy;
+    let right = cam.rotation * Vec3::X;
+    let up = cam.rotation * Vec3::Y; // camera +Y (down in Brush convention)
+    let fwd = cam.rotation * Vec3::Z;
+
+    let n = count as usize;
+    let pts = unsafe { std::slice::from_raw_parts(in_xyz, n * 3) };
+    let outs = unsafe { std::slice::from_raw_parts_mut(out, n * 3) };
+    for i in 0..n {
+        let p = Vec3::new(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2]);
+        let rel = p - cam.position;
+        let depth = rel.dot(fwd);
+        if depth <= 1e-4 {
+            outs[i * 3] = f32::NAN;
+            outs[i * 3 + 1] = f32::NAN;
+            outs[i * 3 + 2] = depth;
+            continue;
+        }
+        let ndc_x = (rel.dot(right) / depth) / thfx;
+        let ndc_y = (rel.dot(up) / depth) / thfy;
+        outs[i * 3] = (ndc_x * 0.5 + 0.5) * w;
+        outs[i * 3 + 1] = (ndc_y * 0.5 + 0.5) * h;
+        outs[i * 3 + 2] = depth;
+    }
+}
+
 /// Set background color (each component 0.0–1.0).
 ///
 /// # Safety
